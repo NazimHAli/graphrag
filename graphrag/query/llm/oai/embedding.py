@@ -113,16 +113,15 @@ class OpenAIEmbedding(BaseTextEmbedding, OpenAILLMImpl):
         )
         chunk_embeddings = []
         chunk_lens = []
-        embedding_results = await asyncio.gather(*[
-            self._aembed_with_retry(chunk, **kwargs) for chunk in token_chunks
-        ])
+        embedding_results = await asyncio.gather(
+            *[self._aembed_with_retry(chunk, **kwargs) for chunk in token_chunks]
+        )
         embedding_results = [result for result in embedding_results if result[0]]
         chunk_embeddings = [result[0] for result in embedding_results]
         chunk_lens = [result[1] for result in embedding_results]
         chunk_embeddings = np.average(chunk_embeddings, axis=0, weights=chunk_lens)  # type: ignore
         chunk_embeddings = chunk_embeddings / np.linalg.norm(chunk_embeddings)
         return chunk_embeddings.tolist()
-
 
     def _embed_with_hf_inference(self, text: str | tuple) -> list[float]:
         if not self.api_key:
@@ -133,8 +132,8 @@ class OpenAIEmbedding(BaseTextEmbedding, OpenAILLMImpl):
         json = {"inputs": text, "wait_for_model": True}
 
         response = requests.post(url, headers=headers, json=json)
-        return response.json()
-
+        res_json = response.json()
+        return res_json[0] if len(res_json) > 0 else []
 
     async def _aembed_with_hf_inference(self, text: str | tuple) -> list[float]:
         if not self.api_key:
@@ -145,9 +144,9 @@ class OpenAIEmbedding(BaseTextEmbedding, OpenAILLMImpl):
         json = {"inputs": text, "wait_for_model": True}
 
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(url, json) as r:
-                return await r.json()
-
+            async with session.post(url, json=json) as response:
+                res_json = await response.json()
+                return res_json[0] if len(res_json) > 0 else []
 
     def _embed_with_retry(
         self, text: str | tuple, **kwargs: Any

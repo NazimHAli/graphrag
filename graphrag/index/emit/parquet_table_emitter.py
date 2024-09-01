@@ -32,21 +32,46 @@ class ParquetTableEmitter(TableEmitter):
         self._storage = storage
         self._on_error = on_error
 
+    async def preprocess_and_emit(self, filename: str, data: pd.DataFrame) -> None:
+        """
+        Preprocess data before emitting to parquet.
+        """
+
+        def ensure_struct(findings_value):
+            """
+            Ensure that findings are properly structured for Parquet.
+            """
+            if isinstance(findings_value, dict):
+                return findings_value
+            elif pd.isnull(findings_value).any():
+                return None
+
+            return {"value": findings_value}
+
+        data["findings"] = data["findings"].apply(ensure_struct)
+        await self._storage.set(filename, data.to_parquet())
+
     async def emit(self, name: str, data: pd.DataFrame) -> None:
         """Emit a dataframe to storage."""
         filename = f"{name}.parquet"
         log.info("emitting parquet table %s", filename)
         try:
             await self._storage.set(filename, data.to_parquet())
-        except ArrowTypeError as e:
-            log.exception("Error while emitting parquet table")
-            self._on_error(
-                e,
-                traceback.format_exc(),
-                None,
+        except (ArrowTypeError, ArrowInvalid) as e:
+            log.warning(
+                f"initial parquet save failed, preprocessing data and retrying: {e}"
             )
-        except ArrowInvalid as e:
-            log.exception("Error while emitting parquet table")
+            try:
+                await self.preprocess_and_emit(filename, data)
+            except Exception as ex:
+                log.exception("error emitting parquet table on retry")
+                self._on_error(
+                    ex,
+                    traceback.format_exc(),
+                    None,
+                )
+        except Exception as e:
+            log.exception("error on emitting parquet table")
             self._on_error(
                 e,
                 traceback.format_exc(),
