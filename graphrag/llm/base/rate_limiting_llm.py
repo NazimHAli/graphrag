@@ -4,6 +4,7 @@
 """Rate limiting LLM implementation."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from typing import Any, Generic, TypeVar
@@ -35,6 +36,22 @@ _CANNOT_MEASURE_INPUT_TOKENS_MSG = "cannot measure input tokens"
 _CANNOT_MEASURE_OUTPUT_TOKENS_MSG = "cannot measure output tokens"
 
 log = logging.getLogger(__name__)
+
+
+def color(color, name, log_str):
+    reset = "\x1b[0m"
+    colors = {
+        "white": "\x1b[97;20m",
+        "grey": "\x1b[38;20m",
+        "green": "\x1b[32;20m",
+        "cyan": "\x1b[36;20m",
+        "yellow": "\x1b[33;20m",
+        "red": "\x1b[31;20m",
+        "bold_red": "\x1b[31;1m",
+    }
+    selected_color = colors[color]
+
+    return f"\n\n{'-'*100}\n{selected_color}START {name}{reset}\n\n{log_str}\n\n{selected_color}END {name}{reset}\n{'-'*100}\n\n"
 
 
 class RateLimitingLLM(LLM[TIn, TOut], Generic[TIn, TOut]):
@@ -126,6 +143,8 @@ class RateLimitingLLM(LLM[TIn, TOut], Generic[TIn, TOut]):
             reraise=True,
             retry=retry_if_exception_type(tuple(self._retryable_errors)),
         )
+        log.info(color("cyan", "PROMPT", input))
+        log.info(color("yellow", "KWARGS", json.dumps(kwargs, indent=2)))
 
         async def sleep_for(time: float | None) -> None:
             log.warning(
@@ -180,6 +199,8 @@ class RateLimitingLLM(LLM[TIn, TOut], Generic[TIn, TOut]):
         output_tokens = self.count_response_tokens(result.output)
         if self._rate_limiter and output_tokens > 0:
             await self._rate_limiter.acquire(output_tokens)
+
+        log.info(color("red", "RESULT", result))
 
         invocation_result = LLMInvocationResult(
             result=result,
