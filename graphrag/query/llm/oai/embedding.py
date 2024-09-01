@@ -5,7 +5,10 @@
 
 import asyncio
 from collections.abc import Callable
+import os
 from typing import Any
+import aiohttp
+import requests
 
 import numpy as np
 import tiktoken
@@ -47,6 +50,7 @@ class OpenAIEmbedding(BaseTextEmbedding, OpenAILLMImpl):
         request_timeout: float = 180.0,
         retry_error_types: tuple[type[BaseException]] = OPENAI_RETRY_ERROR_TYPES,  # type: ignore
         reporter: StatusReporter | None = None,
+        use_hf_embed: bool = False,
     ):
         OpenAILLMImpl.__init__(
             self=self,
@@ -67,6 +71,7 @@ class OpenAIEmbedding(BaseTextEmbedding, OpenAILLMImpl):
         self.max_tokens = max_tokens
         self.token_encoder = tiktoken.get_encoding(self.encoding_name)
         self.retry_error_types = retry_error_types
+        self.use_hf_embed = use_hf_embed
 
     def embed(self, text: str, **kwargs: Any) -> list[float]:
         """
@@ -118,6 +123,32 @@ class OpenAIEmbedding(BaseTextEmbedding, OpenAILLMImpl):
         chunk_embeddings = chunk_embeddings / np.linalg.norm(chunk_embeddings)
         return chunk_embeddings.tolist()
 
+
+    def _embed_with_hf_inference(self, text: str | tuple) -> list[float]:
+        if not self.api_key:
+            raise Exception("Missing API key")
+
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{self.model}"
+        json = {"inputs": text, "wait_for_model": True}
+
+        response = requests.post(url, headers=headers, json=json)
+        return response.json()
+
+
+    async def _aembed_with_hf_inference(self, text: str | tuple) -> list[float]:
+        if not self.api_key:
+            raise Exception("Missing API key")
+
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{self.model}"
+        json = {"inputs": text, "wait_for_model": True}
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(url, json) as r:
+                return await r.json()
+
+
     def _embed_with_retry(
         self, text: str | tuple, **kwargs: Any
     ) -> tuple[list[float], int]:
@@ -130,16 +161,19 @@ class OpenAIEmbedding(BaseTextEmbedding, OpenAILLMImpl):
             )
             for attempt in retryer:
                 with attempt:
-                    embedding = (
-                        self.sync_client.embeddings.create(  # type: ignore
-                            input=text,
-                            model=self.model,
-                            **kwargs,  # type: ignore
+                    if self.use_hf_embed:
+                        embedding = self._embed_with_hf_inference(text)
+                    else:
+                        embedding = (
+                            self.sync_client.embeddings.create(  # type: ignore
+                                input=text,
+                                model=self.model,
+                                **kwargs,  # type: ignore
+                            )
+                            .data[0]
+                            .embedding
+                            or []
                         )
-                        .data[0]
-                        .embedding
-                        or []
-                    )
                     return (embedding, len(text))
         except RetryError as e:
             self._reporter.error(
@@ -163,13 +197,16 @@ class OpenAIEmbedding(BaseTextEmbedding, OpenAILLMImpl):
             )
             async for attempt in retryer:
                 with attempt:
-                    embedding = (
-                        await self.async_client.embeddings.create(  # type: ignore
-                            input=text,
-                            model=self.model,
-                            **kwargs,  # type: ignore
-                        )
-                    ).data[0].embedding or []
+                    if self.use_hf_embed:
+                        embedding = await self._aembed_with_hf_inference(text)
+                    else:
+                        embedding = (
+                            await self.async_client.embeddings.create(  # type: ignore
+                                input=text,
+                                model=self.model,
+                                **kwargs,  # type: ignore
+                            )
+                        ).data[0].embedding or []
                     return (embedding, len(text))
         except RetryError as e:
             self._reporter.error(
